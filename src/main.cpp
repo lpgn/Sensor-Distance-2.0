@@ -23,7 +23,7 @@
 
 const char* mqtt_server = "192.168.1.11";
 const char* mqtt_user = "homeassistant";
-const char* mqtt_password = "passwrord";
+const char* mqtt_password = "password";
 const char* hostname = "water-tank";
 
 WiFiClient espClient;
