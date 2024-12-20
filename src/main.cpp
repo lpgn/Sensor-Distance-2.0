@@ -22,8 +22,8 @@
 #define WINDOW_SIZE 10    // Window size for the moving average
 
 const char* mqtt_server = "192.168.1.11";
-const char* mqtt_user = "homeassistant";
-const char* mqtt_password = "passwrord";
+const char* mqtt_user = "MQTT_USER";
+const char* mqtt_password = "MQTT_PASSWORD";
 const char* hostname = "water-tank";
 
 WiFiClient espClient;
@@ -122,7 +122,21 @@ void loop() {
     Serial.print("Distance measured: ");
     Serial.println(distance);
 
-    float waterLevel = getWaterLevel(distance);
+    // Calculate the percentage change
+    float percentageChange = abs(distance - average) / average;
+
+    if (percentageChange > 0.02) {
+      // Add the new reading to the total
+      total = total - readings[readIndex];
+      readings[readIndex] = distance;
+      total = total + readings[readIndex];
+      readIndex = (readIndex + 1) % WINDOW_SIZE;
+
+      // Calculate the average distance
+      average = total / WINDOW_SIZE;
+    }
+
+    float waterLevel = getWaterLevel(average);
     int volume = getVolume(waterLevel);
 
     if (firstRun) {
@@ -130,7 +144,7 @@ void loop() {
       firstRun = false;
     }
 
-    publishData(distance, waterLevel, volume);
+    publishData(average, waterLevel, volume);
   }
 }
 
@@ -242,7 +256,7 @@ void handleData() {
   int volume = getVolume(waterLevel);
 
   String json = "{";
-  json += "\"distance\":" + String(distance) + ",";
+  json += "\"distance\":" + String(average) + ",";
   json += "\"waterLevel\":" + String(waterLevel, 2) + ",";
   json += "\"volume\":" + String(volume);
   json += "}";
