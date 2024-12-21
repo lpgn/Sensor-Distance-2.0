@@ -12,11 +12,15 @@
 #define MAX_DISTANCE 400
 #define WINDOW_SIZE 10
 
-const char* mqtt_server = MQTT_SERVER;
-const char* mqtt_user = MQTT_USER;
-const char* mqtt_password = MQTT_PASSWORD;
-const char* hostname = DEVICE_NAME;
+char mqtt_server[40] = MQTT_SERVER;
+char mqtt_user[40] = MQTT_USER;
+char mqtt_password[40] = MQTT_PASSWORD;
+float tankHeight = 100.0;
+float tankLength = 200.0;
+float tankWidth = 100.0;
+float sensorOffset = 20.0;
 
+const char* hostname = DEVICE_NAME;
 WiFiClient espClient;
 PubSubClient client(espClient);
 ESP8266WebServer server(80);
@@ -30,14 +34,8 @@ unsigned long ota_progress_millis = 0;
 unsigned long previousMillis = 0;
 unsigned long mqttRetryMillis = 0;
 const unsigned long mqttRetryInterval = 5000; // Retry every 5 seconds
-
 const long interval = 1000;
 bool firstRun = true;
-
-const float tankHeight = 100.0;
-const float tankLength = 200.0;
-const float tankWidth = 100.0;
-const float sensorOffset = 20.0; // Sensor is 20 cm above maximum water level
 
 IPAddress staticIP(192, 168, 1, 98);
 IPAddress gateway(192, 168, 1, 1);
@@ -50,6 +48,7 @@ int getVolume(float waterLevel);
 void publishData(float distance, float waterLevel, int volume);
 void handleRoot();
 void handleData();
+void saveSettings();
 void publishConfig();
 
 void onOTAStart() {
@@ -81,7 +80,6 @@ void setup() {
   client.setCallback([](char* topic, byte* payload, unsigned int length) {
     Serial.print("[MQTT] Message received on topic ");
     Serial.println(topic);
-    // Add further handling if needed
   });
 
   server.begin();
@@ -90,6 +88,7 @@ void setup() {
   ElegantOTA.begin(&server);
   server.on("/", handleRoot);
   server.on("/data", handleData);
+  server.on("/save_settings", HTTP_POST, saveSettings);
 
   for (int thisReading = 0; thisReading < WINDOW_SIZE; thisReading++) {
     readings[thisReading] = 0;
@@ -99,19 +98,14 @@ void setup() {
 }
 
 void loop() {
-  // Always handle the web server and OTA
   ElegantOTA.loop();
   server.handleClient();
-
-  // Attempt MQTT reconnect if disconnected
   reconnect();
 
-  // Process MQTT messages if connected
   if (client.connected()) {
     client.loop();
   }
 
-  // Periodically perform sensor tasks
   unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= interval) {
     previousMillis = currentMillis;
@@ -171,7 +165,7 @@ float getWaterLevel(float distance) {
 }
 
 int getVolume(float waterLevel) {
-  return (tankLength * tankWidth * waterLevel) / 1000; // Convert cubic cm to liters
+  return (tankLength * tankWidth * waterLevel) / 1000;
 }
 
 void publishData(float distance, float waterLevel, int volume) {
@@ -199,29 +193,37 @@ void handleRoot() {
   String html = "<html><head><title>ESP8266 Water Tank Monitor</title>";
   html += "<script>";
   html += "function fetchData() {";
-  html += "  fetch('/data')";
-  html += "    .then(response => response.json())";
-  html += "    .then(data => {";
-  html += "      document.getElementById('distance').innerText = data.distance;";
-  html += "      document.getElementById('waterLevel').innerText = data.waterLevel;";
-  html += "      document.getElementById('volume').innerText = data.volume;";
-  html += "      document.getElementById('wifiStrength').innerText = data.wifiStrength;";
-  html += "      document.getElementById('mqttStatus').innerText = data.mqttStatus;";
-  html += "      document.getElementById('ipAddress').innerText = data.ipAddress;";
-  html += "    });";
+  html += "  fetch('/data').then(response => response.json()).then(data => {";
+  html += "    document.getElementById('distance').innerText = data.distance + ' cm';";
+  html += "    document.getElementById('waterLevel').innerText = data.waterLevel + ' cm';";
+  html += "    document.getElementById('volume').innerText = data.volume + ' liters';";
+  html += "    document.getElementById('wifiStrength').innerText = data.wifiStrength + ' dBm';";
+  html += "    document.getElementById('mqttStatus').innerText = data.mqttStatus;";
+  html += "    document.getElementById('ipAddress').innerText = data.ipAddress;";
+  html += "  });";
   html += "}";
-  html += "setInterval(fetchData, 1000);"; // Fetch data every second
+  html += "setInterval(fetchData, 1000);"; // Refresh data every second
   html += "</script>";
   html += "</head><body onload='fetchData()'>";
   html += "<h1>ESP8266 Water Tank Monitor</h1>";
-  html += "<p>Distance: <span id='distance'>Loading...</span> cm</p>";
-  html += "<p>Water Level: <span id='waterLevel'>Loading...</span> cm</p>";
-  html += "<p>Volume: <span id='volume'>Loading...</span> liters</p>";
-  html += "<p>WiFi Signal Strength: <span id='wifiStrength'>Loading...</span> dBm</p>";
+  html += "<p>Distance: <span id='distance'>Loading...</span></p>";
+  html += "<p>Water Level: <span id='waterLevel'>Loading...</span></p>";
+  html += "<p>Volume: <span id='volume'>Loading...</span></p>";
+  html += "<p>WiFi Signal Strength: <span id='wifiStrength'>Loading...</span></p>";
   html += "<p>MQTT Status: <span id='mqttStatus'>Loading...</span></p>";
   html += "<p>IP Address: <span id='ipAddress'>Loading...</span></p>";
-  html += "<p><a href='/update'>OTA Update</a></p>";
-  html += "</body></html>";
+  html += "<h2>Settings</h2>";
+  html += "<form method='POST' action='/save_settings'>";
+  html += "<label>MQTT Server: </label><input name='mqtt_server' value='" + String(mqtt_server) + "'><br>";
+  html += "<label>MQTT User: </label><input name='mqtt_user' value='" + String(mqtt_user) + "'><br>";
+  html += "<label>MQTT Password: </label><input name='mqtt_password' type='password' value='" + String(mqtt_password) + "'><br>";
+  html += "<label>Tank Height (cm): </label><input name='tank_height' value='" + String(tankHeight) + "'><br>";
+  html += "<label>Tank Length (cm): </label><input name='tank_length' value='" + String(tankLength) + "'><br>";
+  html += "<label>Tank Width (cm): </label><input name='tank_width' value='" + String(tankWidth) + "'><br>";
+  html += "<label>Sensor Offset (cm): </label><input name='sensor_offset' value='" + String(sensorOffset) + "'><br>";
+  html += "<button type='submit'>Save</button>";
+  html += "</form></body></html>";
+
   server.send(200, "text/html", html);
 }
 
@@ -243,4 +245,30 @@ void handleData() {
   json += "}";
 
   server.send(200, "application/json", json);
+}
+
+void saveSettings() {
+  if (server.hasArg("mqtt_server")) {
+    server.arg("mqtt_server").toCharArray(mqtt_server, 40);
+  }
+  if (server.hasArg("mqtt_user")) {
+    server.arg("mqtt_user").toCharArray(mqtt_user, 40);
+  }
+  if (server.hasArg("mqtt_password")) {
+    server.arg("mqtt_password").toCharArray(mqtt_password, 40);
+  }
+  if (server.hasArg("tank_height")) {
+    tankHeight = server.arg("tank_height").toFloat();
+  }
+  if (server.hasArg("tank_length")) {
+    tankLength = server.arg("tank_length").toFloat();
+  }
+  if (server.hasArg("tank_width")) {
+    tankWidth = server.arg("tank_width").toFloat();
+  }
+  if (server.hasArg("sensor_offset")) {
+    sensorOffset = server.arg("sensor_offset").toFloat();
+  }
+
+  server.send(200, "text/html", "<html><body><h1>Settings Saved</h1><a href='/'>Back to Home</a></body></html>");
 }
