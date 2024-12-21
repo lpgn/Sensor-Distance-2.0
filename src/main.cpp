@@ -70,6 +70,29 @@ void onOTAEnd(bool success) {
   }
 }
 
+float getWaterLevel(float distance) {
+  // Clamp distance to ensure it is within a reasonable range
+  if (distance < sensorOffset) {
+    distance = sensorOffset;
+  }
+  if (distance > tankHeight + sensorOffset) {
+    distance = tankHeight + sensorOffset;
+  }
+
+  float waterLevel = tankHeight - (distance - sensorOffset);
+
+  // Ensure water level is non-negative
+  return waterLevel > 0 ? waterLevel : 0;
+}
+
+int getVolume(float waterLevel) {
+  // Calculate volume based on water level
+  int volume = (tankLength * tankWidth * waterLevel) / 1000;
+
+  // Clamp volume to a maximum of 2000 liters
+  return volume > 2000 ? 2000 : (volume < 0 ? 0 : volume);
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("[Setup] Initializing...");
@@ -113,7 +136,17 @@ void loop() {
     unsigned int distance = sonar.ping_cm();
     Serial.printf("[Sensor] Distance: %u cm\n", distance);
 
-    float waterLevel = getWaterLevel(distance);
+    // Update moving window
+    total -= readings[readIndex];         // Remove the oldest value
+    readings[readIndex] = distance;       // Add the new distance
+    total += readings[readIndex];         // Update the total
+    readIndex = (readIndex + 1) % WINDOW_SIZE;
+
+    // Calculate the average distance
+    average = total / WINDOW_SIZE;
+    Serial.printf("[Sensor] Smoothed Distance: %.2f cm\n", average);
+
+    float waterLevel = getWaterLevel(average);
     Serial.printf("[Sensor] Water Level: %.2f cm\n", waterLevel);
 
     int volume = getVolume(waterLevel);
@@ -126,7 +159,7 @@ void loop() {
     }
 
     if (client.connected()) {
-      publishData(distance, waterLevel, volume);
+      publishData(average, waterLevel, volume);
     }
   }
 }
@@ -158,14 +191,6 @@ void reconnect() {
       }
     }
   }
-}
-
-float getWaterLevel(float distance) {
-  return tankHeight - (distance - sensorOffset);
-}
-
-int getVolume(float waterLevel) {
-  return (tankLength * tankWidth * waterLevel) / 1000;
 }
 
 void publishData(float distance, float waterLevel, int volume) {
