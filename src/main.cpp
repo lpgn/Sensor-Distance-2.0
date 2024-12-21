@@ -247,6 +247,8 @@ void handleRoot() {
   html += "<label>Tank Width (cm): </label><input name='tank_width' value='" + String(tankWidth) + "'><br>";
   html += "<label>Sensor Offset (cm): </label><input name='sensor_offset' value='" + String(sensorOffset) + "'><br>";
   html += "<button type='submit'>Save</button>";
+  html += "<h2>ElegantOTA</h2>";
+  html += "<p>Upload new firmware using <a href='/update'>ElegantOTA</a></p>";
   html += "</form></body></html>";
 
   server.send(200, "text/html", html);
