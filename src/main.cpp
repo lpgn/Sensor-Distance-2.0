@@ -10,7 +10,6 @@
 #define TRIGGER_PIN D1
 #define ECHO_PIN D2
 #define MAX_DISTANCE 400
-#define WINDOW_SIZE 10
 
 char mqtt_server[40] = MQTT_SERVER;
 char mqtt_user[40] = MQTT_USER;
@@ -26,10 +25,6 @@ PubSubClient client(espClient);
 ESP8266WebServer server(80);
 NewPing sonar(TRIGGER_PIN, ECHO_PIN, MAX_DISTANCE);
 
-float readings[WINDOW_SIZE];
-int readIndex = 0;
-float total = 0;
-float average = 0;
 unsigned long ota_progress_millis = 0;
 unsigned long previousMillis = 0;
 unsigned long mqttRetryMillis = 0;
@@ -41,6 +36,10 @@ IPAddress staticIP(192, 168, 1, 98);
 IPAddress gateway(192, 168, 1, 1);
 IPAddress subnet(255, 255, 255, 0);
 
+bool sendDistance = true;
+bool sendWaterLevel = true;
+bool sendVolume = true;
+
 void setup_wifi();
 void reconnect();
 float getWaterLevel(float distance);
@@ -49,6 +48,7 @@ void publishData(float distance, float waterLevel, int volume);
 void handleRoot();
 void handleData();
 void saveSettings();
+void handleToggleOption();
 void publishConfig();
 
 void onOTAStart() {
@@ -71,7 +71,6 @@ void onOTAEnd(bool success) {
 }
 
 float getWaterLevel(float distance) {
-  // Clamp distance to ensure it is within a reasonable range
   if (distance < sensorOffset) {
     distance = sensorOffset;
   }
@@ -80,16 +79,11 @@ float getWaterLevel(float distance) {
   }
 
   float waterLevel = tankHeight - (distance - sensorOffset);
-
-  // Ensure water level is non-negative
   return waterLevel > 0 ? waterLevel : 0;
 }
 
 int getVolume(float waterLevel) {
-  // Calculate volume based on water level
   int volume = (tankLength * tankWidth * waterLevel) / 1000;
-
-  // Clamp volume to a maximum of 2000 liters
   return volume > 2000 ? 2000 : (volume < 0 ? 0 : volume);
 }
 
@@ -112,10 +106,7 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/data", handleData);
   server.on("/save_settings", HTTP_POST, saveSettings);
-
-  for (int thisReading = 0; thisReading < WINDOW_SIZE; thisReading++) {
-    readings[thisReading] = 0;
-  }
+  server.on("/toggle_option", HTTP_POST, handleToggleOption);
 
   Serial.println("[Setup] Completed");
 }
@@ -136,17 +127,7 @@ void loop() {
     unsigned int distance = sonar.ping_cm();
     Serial.printf("[Sensor] Distance: %u cm\n", distance);
 
-    // Update moving window
-    total -= readings[readIndex];         // Remove the oldest value
-    readings[readIndex] = distance;       // Add the new distance
-    total += readings[readIndex];         // Update the total
-    readIndex = (readIndex + 1) % WINDOW_SIZE;
-
-    // Calculate the average distance
-    average = total / WINDOW_SIZE;
-    Serial.printf("[Sensor] Smoothed Distance: %.2f cm\n", average);
-
-    float waterLevel = getWaterLevel(average);
+    float waterLevel = getWaterLevel(distance);
     Serial.printf("[Sensor] Water Level: %.2f cm\n", waterLevel);
 
     int volume = getVolume(waterLevel);
@@ -159,7 +140,7 @@ void loop() {
     }
 
     if (client.connected()) {
-      publishData(average, waterLevel, volume);
+      publishData(distance, waterLevel, volume);
     }
   }
 }
@@ -194,14 +175,22 @@ void reconnect() {
 }
 
 void publishData(float distance, float waterLevel, int volume) {
-  String distanceStr = String(distance);
-  String waterLevelStr = String(waterLevel, 2);
-  String volumeStr = String(volume);
+  if (sendDistance) {
+    String distanceStr = String(distance);
+    client.publish("water_tank/distance/state", distanceStr.c_str());
+  }
 
-  Serial.println("[MQTT] Publishing data...");
-  client.publish("water_tank/distance/state", distanceStr.c_str());
-  client.publish("water_tank/water_level/state", waterLevelStr.c_str());
-  client.publish("water_tank/volume/state", volumeStr.c_str());
+  if (sendWaterLevel) {
+    String waterLevelStr = String(waterLevel, 2);
+    client.publish("water_tank/water_level/state", waterLevelStr.c_str());
+  }
+
+  if (sendVolume) {
+    String volumeStr = String(volume);
+    client.publish("water_tank/volume/state", volumeStr.c_str());
+  }
+
+  Serial.println("[MQTT] Data published");
 }
 
 void publishConfig() {
@@ -246,10 +235,20 @@ void handleRoot() {
   html += "<label>Tank Length (cm): </label><input name='tank_length' value='" + String(tankLength) + "'><br>";
   html += "<label>Tank Width (cm): </label><input name='tank_width' value='" + String(tankWidth) + "'><br>";
   html += "<label>Sensor Offset (cm): </label><input name='sensor_offset' value='" + String(sensorOffset) + "'><br>";
+  html += "<h3>MQTT Data Options</h3>";
+  html += "<input type='checkbox' id='sendDistance' onchange='toggleOption(this)' checked> Send Distance<br>";
+  html += "<input type='checkbox' id='sendWaterLevel' onchange='toggleOption(this)' checked> Send Water Level<br>";
+  html += "<input type='checkbox' id='sendVolume' onchange='toggleOption(this)' checked> Send Volume<br>";
   html += "<button type='submit'>Save</button>";
   html += "<h2>ElegantOTA</h2>";
   html += "<p>Upload new firmware using <a href='/update'>ElegantOTA</a></p>";
-  html += "</form></body></html>";
+  html += "</form>";
+  html += "<script>";
+  html += "function toggleOption(checkbox) {";
+  html += "  fetch('/toggle_option', { method: 'POST', body: JSON.stringify({ option: checkbox.id, value: checkbox.checked }) });";
+  html += "}";
+  html += "</script>";
+  html += "</body></html>";
 
   server.send(200, "text/html", html);
 }
@@ -298,4 +297,23 @@ void saveSettings() {
   }
 
   server.send(200, "text/html", "<html><body><h1>Settings Saved</h1><a href='/'>Back to Home</a></body></html>");
+}
+
+void handleToggleOption() {
+  if (server.hasArg("plain")) {
+    JsonDocument doc;
+    deserializeJson(doc, server.arg("plain"));
+    String option = doc["option"].as<String>();
+    bool value = doc["value"].as<bool>();
+
+    if (option == "sendDistance") {
+      sendDistance = value;
+    } else if (option == "sendWaterLevel") {
+      sendWaterLevel = value;
+    } else if (option == "sendVolume") {
+      sendVolume = value;
+    }
+  }
+
+  server.send(200, "application/json", "{\"status\":\"success\"}");
 }
